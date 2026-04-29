@@ -38,13 +38,34 @@ func (w *statusWriter) WriteHeader(status int) {
 // ──────────────────────────────────────
 
 func CORS(allowOrigins string) func(http.Handler) http.Handler {
+	// Support comma-separated list of origins, e.g. "http://localhost:3000,http://localhost:3001"
+	allowed := make(map[string]bool)
+	for _, o := range strings.Split(allowOrigins, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			allowed[o] = true
+		}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", allowOrigins)
+			origin := r.Header.Get("Origin")
+
+			// Reflect the origin back if it is in the allowlist; otherwise use the first entry.
+			if allowed[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			} else if len(allowed) > 0 {
+				for o := range allowed {
+					w.Header().Set("Access-Control-Allow-Origin", o)
+					break
+				}
+			}
+
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.Header().Set("Vary", "Origin")
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

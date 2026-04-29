@@ -95,6 +95,7 @@ const (
 	StatusInactive = "inactive"
 	StatusPending  = "pending"
 
+	RoleSuperAdmin  = "superadmin"
 	RoleGovAdmin    = "gov_admin"
 	RoleSchoolAdmin = "school_admin"
 	RoleTeacher     = "teacher"
@@ -104,14 +105,31 @@ const (
 
 // System permissions
 var SystemPermissions = map[string][]string{
+	RoleSuperAdmin: {
+		"superadmin",
+		"tenants:read_all", "tenants:manage", "tenants:create",
+		"schools:read_all", "schools:manage",
+		"users:read_all", "users:manage",
+		"plans:manage",
+		"subscription:manage", "subscription:read",
+		"reports:read_all", "reports:aggregate",
+		"classes:manage", "classes:read",
+		"subjects:manage", "subjects:read",
+		"attendance:configure", "attendance:read",
+		"grades:manage", "grades:read",
+	},
 	RoleGovAdmin: {
 		"tenants:read_all", "tenants:manage",
 		"schools:read_all", "schools:manage",
 		"reports:read_all", "reports:aggregate",
-		"users:read_all",
+		"users:read_all", "users:manage",
+		"subscription:manage", "subscription:read",
+		"classes:read",
+		"attendance:read",
 	},
 	RoleSchoolAdmin: {
 		"school:manage", "school:read",
+		"users:manage", "users:read_all",
 		"teachers:manage", "teachers:read",
 		"students:manage", "students:read",
 		"classes:manage", "classes:read",

@@ -15,15 +15,26 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-// RegisterRoutes adds auth routes to the mux
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+// RegisterPublicRoutes adds auth routes that do NOT require a token.
+func (h *Handler) RegisterPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/register", h.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", h.Login)
 	mux.HandleFunc("POST /api/v1/auth/refresh", h.Refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", h.Logout)
+}
+
+// RegisterProtectedRoutes adds auth routes that REQUIRE a valid token.
+// Wire these behind the Authenticate middleware in main.go.
+func (h *Handler) RegisterProtectedRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/me", h.GetProfile)
 	mux.HandleFunc("PUT /api/v1/auth/me", h.UpdateProfile)
 	mux.HandleFunc("PUT /api/v1/auth/password", h.ChangePassword)
+}
+
+// RegisterRoutes is kept for backwards-compatibility and now only registers public routes.
+// Deprecated: prefer RegisterPublicRoutes + RegisterProtectedRoutes.
+func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	h.RegisterPublicRoutes(mux)
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {

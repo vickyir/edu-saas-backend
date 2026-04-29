@@ -72,37 +72,33 @@ func main() {
 		})
 	})
 
-	// Public routes (no auth required)
-	authHandler.RegisterRoutes(mux)
+	// ── Public routes (no token required) ──
+	authHandler.RegisterPublicRoutes(mux)
 
 	// Tenant creation is public (school onboarding — no user exists yet)
 	mux.HandleFunc("POST /api/v1/tenants", tenantHandler.Create)
 
-	// Plans are public (for pricing page)
+	// Plans are public (pricing page)
 	mux.HandleFunc("GET /api/v1/plans", subHandler.ListPlans)
 	mux.HandleFunc("GET /api/v1/plans/{id}", subHandler.GetPlan)
 
-	// Protected routes — everything else requires authentication
+	// ── Protected routes — require a valid JWT ──
 	protectedMux := http.NewServeMux()
+	authHandler.RegisterProtectedRoutes(protectedMux)   // GET/PUT /api/v1/auth/me, PUT /api/v1/auth/password
 	tenantHandler.RegisterProtectedRoutes(protectedMux) // GET/PUT/LIST tenants
-	subHandler.RegisterRoutes(protectedMux)              // subscription management
+	subHandler.RegisterRoutes(protectedMux)             // subscription management
 
-	mux.Handle("/api/v1/tenants/", middleware.Chain(
-		protectedMux,
-		middleware.Authenticate(authService),
-	))
-	mux.Handle("/api/v1/subscription", middleware.Chain(
-		protectedMux,
-		middleware.Authenticate(authService),
-	))
-	mux.Handle("/api/v1/subscription/", middleware.Chain(
-		protectedMux,
-		middleware.Authenticate(authService),
-	))
-	mux.Handle("/api/v1/admin/", middleware.Chain(
-		protectedMux,
-		middleware.Authenticate(authService),
-	))
+	authenticate := middleware.Authenticate(authService)
+
+	// Auth profile & password endpoints
+	mux.Handle("/api/v1/auth/me", middleware.Chain(protectedMux, authenticate))
+	mux.Handle("/api/v1/auth/password", middleware.Chain(protectedMux, authenticate))
+
+	// Tenant & subscription & admin
+	mux.Handle("/api/v1/tenants/", middleware.Chain(protectedMux, authenticate))
+	mux.Handle("/api/v1/subscription", middleware.Chain(protectedMux, authenticate))
+	mux.Handle("/api/v1/subscription/", middleware.Chain(protectedMux, authenticate))
+	mux.Handle("/api/v1/admin/", middleware.Chain(protectedMux, authenticate))
 
 	// ── Global Middleware ──
 	handler := middleware.Chain(

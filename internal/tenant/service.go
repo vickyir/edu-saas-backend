@@ -84,13 +84,20 @@ func (s *Service) CreateTenant(ctx context.Context, req CreateTenantRequest) (*T
 	}
 
 	// Assign admin role
-	createdUser, _ := s.authRepo.GetUserByEmail(ctx, req.AdminEmail)
-	if createdUser != nil {
-		roleName := auth.RoleSchoolAdmin
-		if req.Type == TenantTypeGovernment {
-			roleName = auth.RoleGovAdmin
-		}
-		_ = s.authService.AssignRoleToUser(ctx, createdUser.ID, tenant.ID, roleName)
+	createdUser, err := s.authRepo.GetUserByEmail(ctx, req.AdminEmail)
+	if err != nil {
+		return nil, fmt.Errorf("find created admin user: %w", err)
+	}
+	if createdUser == nil {
+		return nil, fmt.Errorf("admin user was not created properly")
+	}
+
+	roleName := auth.RoleSchoolAdmin
+	if req.Type == TenantTypeGovernment {
+		roleName = auth.RoleGovAdmin
+	}
+	if err := s.authService.AssignRoleToUser(ctx, createdUser.ID, tenant.ID, roleName); err != nil {
+		return nil, fmt.Errorf("assign admin role: %w", err)
 	}
 
 	s.eventBus.Publish(events.Event{

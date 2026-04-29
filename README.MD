@@ -39,3 +39,11 @@ cp ../.env.example .env
 
 # Now run the server:
 go run ./cmd/server
+
+# This drops everything and recreates — you'll lose existing test data
+psql -h localhost -U edusaas -d edusaas -c "
+  DROP SCHEMA public CASCADE;
+  CREATE SCHEMA public;
+  CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+  CREATE EXTENSION IF NOT EXISTS \"pgcrypto\";
+"
