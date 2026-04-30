@@ -90,6 +90,35 @@ type ChangePasswordRequest struct {
 // Permissions Constants
 // ──────────────────────────────────────
 
+// UserWithRoles is User + their resolved roles (for admin list/detail views).
+type UserWithRoles struct {
+	ID        uuid.UUID  `json:"id"`
+	TenantID  uuid.UUID  `json:"tenant_id"`
+	Email     string     `json:"email"`
+	Phone     string     `json:"phone,omitempty"`
+	FullName  string     `json:"full_name"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	Roles     []*Role    `json:"roles"`
+}
+
+// CreateManagedUserRequest is the DTO for admin-created users.
+type CreateManagedUserRequest struct {
+	Email    string `json:"email"`
+	FullName string `json:"full_name"`
+	Phone    string `json:"phone"`
+	Password string `json:"password"`
+	Role     string `json:"role"` // target role name
+}
+
+// UpdateManagedUserRequest is the DTO for admin user updates.
+type UpdateManagedUserRequest struct {
+	FullName string `json:"full_name"`
+	Phone    string `json:"phone"`
+	Status   string `json:"status"`
+}
+
 const (
 	StatusActive   = "active"
 	StatusInactive = "inactive"

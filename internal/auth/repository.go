@@ -242,5 +242,119 @@ func (r *Repository) EmailExists(ctx context.Context, email string) (bool, error
 	err := r.db.Pool.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM users WHERE email = $1 AND deleted_at IS NULL)", email,
 	).Scan(&exists)
-	return exists, fmt.Errorf("check email: %w", err)
+	if err != nil {
+		return false, fmt.Errorf("check email: %w", err)
+	}
+	return exists, nil
+}
+
+// ListUsersWithRoles returns paginated users with their roles for a tenant.
+func (r *Repository) ListUsersWithRoles(ctx context.Context, tenantID uuid.UUID, roleFilter string, page, perPage int) ([]*UserWithRoles, int64, error) {
+	conn, err := r.db.WithTenant(ctx, tenantID.String())
+	if err != nil {
+		return nil, 0, err
+	}
+	defer conn.Release()
+
+	countQ := `SELECT COUNT(DISTINCT u.id) FROM users u WHERE u.tenant_id = $1 AND u.deleted_at IS NULL`
+	countArgs := []any{tenantID}
+	if roleFilter != "" {
+		countQ += ` AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id = ur.role_id WHERE ur.user_id = u.id AND ro.name = $2)`
+		countArgs = append(countArgs, roleFilter)
+	}
+	var total int64
+	if err := conn.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	q := `
+		SELECT u.id, u.tenant_id, u.email, u.phone, u.full_name, u.status, u.created_at, u.updated_at,
+		       COALESCE(
+		           json_agg(json_build_object('id',r.id,'name',r.name,'permissions',r.permissions,'is_system',r.is_system,'created_at',r.created_at))
+		           FILTER (WHERE r.id IS NOT NULL), '[]'
+		       ) AS roles
+		FROM users u
+		LEFT JOIN user_roles ur ON ur.user_id = u.id
+		LEFT JOIN roles r ON r.id = ur.role_id
+		WHERE u.tenant_id = $1 AND u.deleted_at IS NULL`
+	args := []any{tenantID}
+	if roleFilter != "" {
+		q += ` AND EXISTS (SELECT 1 FROM user_roles ur2 JOIN roles ro2 ON ro2.id = ur2.role_id WHERE ur2.user_id = u.id AND ro2.name = $2)`
+		args = append(args, roleFilter)
+		q += fmt.Sprintf(` GROUP BY u.id ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	} else {
+		q += fmt.Sprintf(` GROUP BY u.id ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	}
+	args = append(args, perPage, (page-1)*perPage)
+
+	rows, err := conn.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var users []*UserWithRoles
+	for rows.Next() {
+		u := &UserWithRoles{}
+		var rolesJSON []byte
+		if err := rows.Scan(&u.ID, &u.TenantID, &u.Email, &u.Phone, &u.FullName, &u.Status, &u.CreatedAt, &u.UpdatedAt, &rolesJSON); err != nil {
+			return nil, 0, err
+		}
+		json.Unmarshal(rolesJSON, &u.Roles)
+		users = append(users, u)
+	}
+	return users, total, nil
+}
+
+// GetUserWithRoles returns a single user and their roles.
+func (r *Repository) GetUserWithRoles(ctx context.Context, tenantID, userID uuid.UUID) (*UserWithRoles, error) {
+	q := `
+		SELECT u.id, u.tenant_id, u.email, u.phone, u.full_name, u.status, u.created_at, u.updated_at,
+		       COALESCE(
+		           json_agg(json_build_object('id',r.id,'name',r.name,'is_system',r.is_system,'created_at',r.created_at))
+		           FILTER (WHERE r.id IS NOT NULL), '[]'
+		       ) AS roles
+		FROM users u
+		LEFT JOIN user_roles ur ON ur.user_id = u.id
+		LEFT JOIN roles r ON r.id = ur.role_id
+		WHERE u.id = $1 AND u.tenant_id = $2 AND u.deleted_at IS NULL
+		GROUP BY u.id`
+	u := &UserWithRoles{}
+	var rolesJSON []byte
+	err := r.db.Pool.QueryRow(ctx, q, userID, tenantID).Scan(
+		&u.ID, &u.TenantID, &u.Email, &u.Phone, &u.FullName, &u.Status, &u.CreatedAt, &u.UpdatedAt, &rolesJSON,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal(rolesJSON, &u.Roles)
+	return u, nil
+}
+
+// UpdateUserAdmin updates name, phone, and status for admin-managed users.
+func (r *Repository) UpdateUserAdmin(ctx context.Context, u *User) error {
+	u.UpdatedAt = time.Now()
+	_, err := r.db.Pool.Exec(ctx,
+		`UPDATE users SET full_name=$1, phone=$2, status=$3, updated_at=$4 WHERE id=$5 AND tenant_id=$6 AND deleted_at IS NULL`,
+		u.FullName, u.Phone, u.Status, u.UpdatedAt, u.ID, u.TenantID,
+	)
+	return err
+}
+
+// SoftDeleteUser marks a user as deleted.
+func (r *Repository) SoftDeleteUser(ctx context.Context, tenantID, userID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx,
+		`UPDATE users SET deleted_at = NOW(), status = 'inactive' WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		userID, tenantID,
+	)
+	return err
+}
+
+// RemoveAllRoles strips all roles from a user (used before re-assigning).
+func (r *Repository) RemoveAllRoles(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, userID)
+	return err
 }

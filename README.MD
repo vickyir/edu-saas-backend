@@ -47,3 +47,11 @@ psql -h localhost -U edusaas -d edusaas -c "
   CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
   CREATE EXTENSION IF NOT EXISTS \"pgcrypto\";
 "
+
+═══════════════════════════════════════
+  ✓ Superadmin setup complete!
+═══════════════════════════════════════
+  Email:    superadmin@edusaas.id
+  Password: SuperAdmin123!
+  ⚠ CHANGE THIS PASSWORD after first login!
+═══════════════════════════════════════

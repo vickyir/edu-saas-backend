@@ -47,16 +47,25 @@ func New(cfg config.DatabaseConfig) (*DB, error) {
 
 // WithTenant acquires a connection and sets the tenant context for RLS.
 // The returned conn MUST be released by the caller via conn.Release().
+//
+// NOTE: PostgreSQL does not allow parameter placeholders ($1) in utility
+// commands such as SET. We use set_config() — a regular SQL function —
+// which supports parameterized queries correctly.
+//   set_config(setting, value, is_local)
+//   is_local = false  →  persists for the whole session (connection)
 func (db *DB) WithTenant(ctx context.Context, tenantID string) (*pgxpool.Conn, error) {
 	conn, err := db.Pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire conn: %w", err)
 	}
 
-	_, err = conn.Exec(ctx, "SET app.current_tenant = $1", tenantID)
+	_, err = conn.Exec(ctx,
+		"SELECT set_config('app.current_tenant', $1, false)",
+		tenantID,
+	)
 	if err != nil {
 		conn.Release()
-		return nil, fmt.Errorf("set tenant: %w", err)
+		return nil, fmt.Errorf("set tenant context: %w", err)
 	}
 
 	return conn, nil

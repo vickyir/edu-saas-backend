@@ -3,6 +3,9 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+
+	"github.com/google/uuid"
 
 	"github.com/edusaas/backend/internal/shared/response"
 )
@@ -29,6 +32,16 @@ func (h *Handler) RegisterProtectedRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/auth/me", h.GetProfile)
 	mux.HandleFunc("PUT /api/v1/auth/me", h.UpdateProfile)
 	mux.HandleFunc("PUT /api/v1/auth/password", h.ChangePassword)
+}
+
+// RegisterAdminRoutes adds user-management routes (require auth + appropriate role).
+func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/admin/users", h.ListUsers)
+	mux.HandleFunc("POST /api/v1/admin/users", h.CreateUser)
+	mux.HandleFunc("GET /api/v1/admin/users/{id}", h.GetUser)
+	mux.HandleFunc("PUT /api/v1/admin/users/{id}", h.UpdateUser)
+	mux.HandleFunc("DELETE /api/v1/admin/users/{id}", h.DeleteUser)
+	mux.HandleFunc("PUT /api/v1/admin/users/{id}/role", h.ChangeUserRole)
 }
 
 // RegisterRoutes is kept for backwards-compatibility and now only registers public routes.
@@ -192,4 +205,173 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusOK, map[string]string{"message": "password changed"})
+}
+
+// ── Admin User Management ──────────────────────────────────────────────────────
+
+func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+	if perPage < 1 || perPage > 100 {
+		perPage = 20
+	}
+	roleFilter := r.URL.Query().Get("role")
+
+	users, total, err := h.service.ListUsers(r.Context(), claims.TenantID, roleFilter, page, perPage)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "failed to list users")
+		return
+	}
+	response.Paginated(w, users, page, perPage, total)
+}
+
+func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req CreateManagedUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	user, err := h.service.CreateManagedUser(r.Context(), claims.TenantID, claims.Roles, req)
+	if err != nil {
+		switch err {
+		case ErrEmailTaken:
+			response.Error(w, http.StatusConflict, "email already registered")
+		case ErrPermissionDenied:
+			response.Error(w, http.StatusForbidden, "you cannot create a user with that role")
+		default:
+			response.Error(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	response.JSON(w, http.StatusCreated, user)
+}
+
+func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	userID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user ID")
+		return
+	}
+
+	user, err := h.service.GetUser(r.Context(), claims.TenantID, userID)
+	if err != nil {
+		if err == ErrUserNotFound {
+			response.Error(w, http.StatusNotFound, "user not found")
+			return
+		}
+		response.Error(w, http.StatusInternalServerError, "failed to get user")
+		return
+	}
+	response.JSON(w, http.StatusOK, user)
+}
+
+func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	userID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user ID")
+		return
+	}
+
+	var req UpdateManagedUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	user, err := h.service.UpdateManagedUser(r.Context(), claims.TenantID, userID, req)
+	if err != nil {
+		switch err {
+		case ErrUserNotFound:
+			response.Error(w, http.StatusNotFound, "user not found")
+		case ErrPermissionDenied:
+			response.Error(w, http.StatusForbidden, "access denied")
+		default:
+			response.Error(w, http.StatusInternalServerError, "failed to update user")
+		}
+		return
+	}
+	response.JSON(w, http.StatusOK, user)
+}
+
+func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	userID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user ID")
+		return
+	}
+
+	if err := h.service.DeleteManagedUser(r.Context(), claims.TenantID, userID); err != nil {
+		response.Error(w, http.StatusInternalServerError, "failed to delete user")
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]string{"message": "user deleted"})
+}
+
+func (h *Handler) ChangeUserRole(w http.ResponseWriter, r *http.Request) {
+	claims := ClaimsFromContext(r.Context())
+	if claims == nil {
+		response.Error(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	userID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, http.StatusBadRequest, "invalid user ID")
+		return
+	}
+
+	var body struct {
+		Role string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Role == "" {
+		response.Error(w, http.StatusBadRequest, "role is required")
+		return
+	}
+
+	if err := h.service.ChangeUserRole(r.Context(), claims.TenantID, userID, body.Role, claims.Roles); err != nil {
+		switch err {
+		case ErrPermissionDenied:
+			response.Error(w, http.StatusForbidden, "you cannot assign that role")
+		case ErrUserNotFound:
+			response.Error(w, http.StatusNotFound, "user not found")
+		default:
+			response.Error(w, http.StatusInternalServerError, "failed to change role")
+		}
+		return
+	}
+	response.JSON(w, http.StatusOK, map[string]string{"message": "role updated"})
 }

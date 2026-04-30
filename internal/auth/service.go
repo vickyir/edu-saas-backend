@@ -316,6 +316,140 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, req Chan
 }
 
 // ──────────────────────────────────────
+// Admin User Management
+// ──────────────────────────────────────
+
+// allowedRoles returns the set of roles a creator (by their own role) may assign.
+var allowedRoles = map[string][]string{
+	RoleSuperAdmin:  {RoleSuperAdmin, RoleGovAdmin, RoleSchoolAdmin, RoleTeacher, RoleStudent, RoleParent, "staff"},
+	RoleGovAdmin:    {RoleGovAdmin, RoleSchoolAdmin, RoleTeacher, RoleStudent, RoleParent, "staff"},
+	RoleSchoolAdmin: {RoleTeacher, RoleStudent, RoleParent, "staff"},
+}
+
+func canCreateWithRole(creatorRoles []string, targetRole string) bool {
+	for _, cr := range creatorRoles {
+		if allowed, ok := allowedRoles[cr]; ok {
+			for _, a := range allowed {
+				if a == targetRole {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) ListUsers(ctx context.Context, tenantID uuid.UUID, roleFilter string, page, perPage int) ([]*UserWithRoles, int64, error) {
+	return s.repo.ListUsersWithRoles(ctx, tenantID, roleFilter, page, perPage)
+}
+
+func (s *Service) GetUser(ctx context.Context, tenantID, userID uuid.UUID) (*UserWithRoles, error) {
+	u, err := s.repo.GetUserWithRoles(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, ErrUserNotFound
+	}
+	return u, nil
+}
+
+func (s *Service) CreateManagedUser(ctx context.Context, tenantID uuid.UUID, creatorRoles []string, req CreateManagedUserRequest) (*UserWithRoles, error) {
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+
+	if req.Email == "" || req.FullName == "" || req.Password == "" || req.Role == "" {
+		return nil, fmt.Errorf("email, full_name, password, and role are required")
+	}
+	if len(req.Password) < 8 {
+		return nil, fmt.Errorf("password must be at least 8 characters")
+	}
+
+	if !canCreateWithRole(creatorRoles, req.Role) {
+		return nil, ErrPermissionDenied
+	}
+
+	existing, err := s.repo.GetUserByEmail(ctx, req.Email)
+	if err != nil {
+		return nil, fmt.Errorf("check email: %w", err)
+	}
+	if existing != nil {
+		return nil, ErrEmailTaken
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("hash password: %w", err)
+	}
+
+	user := &User{
+		TenantID: tenantID,
+		Email:    req.Email,
+		Phone:    req.Phone,
+		FullName: req.FullName,
+		Password: string(hashed),
+		Status:   StatusActive,
+	}
+	if err := s.repo.CreateUser(ctx, user); err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+
+	if err := s.AssignRoleToUser(ctx, user.ID, tenantID, req.Role); err != nil {
+		return nil, fmt.Errorf("assign role: %w", err)
+	}
+
+	s.eventBus.Publish(events.Event{
+		Type:     events.EventUserRegistered,
+		TenantID: tenantID.String(),
+		UserID:   user.ID.String(),
+		Payload:  map[string]any{"email": user.Email, "full_name": user.FullName, "role": req.Role},
+	})
+
+	return s.repo.GetUserWithRoles(ctx, tenantID, user.ID)
+}
+
+func (s *Service) UpdateManagedUser(ctx context.Context, tenantID, userID uuid.UUID, req UpdateManagedUserRequest) (*UserWithRoles, error) {
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil || u == nil {
+		return nil, ErrUserNotFound
+	}
+	if u.TenantID != tenantID {
+		return nil, ErrPermissionDenied
+	}
+	if req.FullName != "" {
+		u.FullName = req.FullName
+	}
+	u.Phone = req.Phone
+	if req.Status != "" {
+		u.Status = req.Status
+	}
+	if err := s.repo.UpdateUserAdmin(ctx, u); err != nil {
+		return nil, fmt.Errorf("update user: %w", err)
+	}
+	return s.repo.GetUserWithRoles(ctx, tenantID, userID)
+}
+
+func (s *Service) ChangeUserRole(ctx context.Context, tenantID, userID uuid.UUID, newRole string, creatorRoles []string) error {
+	if !canCreateWithRole(creatorRoles, newRole) {
+		return ErrPermissionDenied
+	}
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil || u == nil {
+		return ErrUserNotFound
+	}
+	if u.TenantID != tenantID {
+		return ErrPermissionDenied
+	}
+	if err := s.repo.RemoveAllRoles(ctx, userID); err != nil {
+		return fmt.Errorf("remove roles: %w", err)
+	}
+	return s.AssignRoleToUser(ctx, userID, tenantID, newRole)
+}
+
+func (s *Service) DeleteManagedUser(ctx context.Context, tenantID, userID uuid.UUID) error {
+	return s.repo.SoftDeleteUser(ctx, tenantID, userID)
+}
+
+// ──────────────────────────────────────
 // RBAC Helpers
 // ──────────────────────────────────────
 
